@@ -1,0 +1,4 @@
+/fat32
+*.o
+*.d
+disk.img
