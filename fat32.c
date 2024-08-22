@@ -118,8 +118,6 @@ lfn_next:
 
             current_offset -= 32;
             continue;
-            // Обработка длинных имён файлов здесь, если необходимо
-            // Например: read_long_file_name(fat, entry.start_cluster);
         } 
        
         print_directory_entry(entry);
@@ -141,6 +139,7 @@ size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* 
     while (cluster < 0x0FFFFFF8) {  // Проверка на последний кластер в цепочке
         if(!probe) {
             uint32_t offset = fat->cluster_base + (cluster * cluster_size);
+            printf("Offset: %x\n", offset);
             fseek(fat->image, offset, SEEK_SET);
 
             fread(((char*)out) + (cluster_count * cluster_size), cluster_size, 1, fat->image);
