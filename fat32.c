@@ -1,6 +1,8 @@
 #include "fat32.h"
 #include "fat_utf16_utf8.h"
 #include "lfn.h"
+#include "vfs.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +47,7 @@ void print_directory_entry(DirectoryEntry_t* entry) {
     }
 }
 
-void read_directory(fat_t* fat, uint32_t start_cluster) {
+direntry_t* read_directory(fat_t* fat, uint32_t start_cluster) {
     printf("Directory cluster: %d\n", start_cluster);
 
     uint32_t cluster_count = read_cluster_chain(fat, start_cluster, true, NULL);
@@ -61,11 +63,15 @@ void read_directory(fat_t* fat, uint32_t start_cluster) {
     uint32_t offset = start_cluster * cluster_size;
     fseek(fat->image, offset, SEEK_SET);
 
+    direntry_t* dir = calloc(1, sizeof(direntry_t));
+    direntry_t* dirptr = dir;
+
     // HINT: Both LFN and directory entry are 32 bytes long.
     DirectoryEntry_t* prev = (DirectoryEntry_t*)(cluster_data + cluster_count);
     uint16_t in_name_buffer[256] = {0};
     size_t in_name_ptr = 0;
     char out_name_buffer[256] = {0};
+
     do {
         DirectoryEntry_t* entry = (DirectoryEntry_t*)(cluster_data + current_offset);
 
@@ -110,6 +116,17 @@ lfn_next:
                 utf16_to_utf8(in_name_buffer, in_name_ptr, out_name_buffer);
 
                 printf("Long file name: %s\n", out_name_buffer);
+       
+                dirptr->name = calloc(256, 1);
+                memcpy(dirptr->name, out_name_buffer, 256);
+
+                dirptr->type = (prev->attributes & ATTR_DIRECTORY) ? ENT_DIRECTORY : ENT_FILE;
+                dirptr->size = prev->file_size;
+
+                if(current_offset != 0) {
+                    dirptr->next = calloc(1, sizeof(direntry_t));
+                    dirptr = dirptr->next;
+                }
 
                 memset(in_name_buffer, 0, 512);
                 memset(out_name_buffer, 0, 256);
@@ -121,6 +138,7 @@ lfn_next:
         } 
        
         print_directory_entry(entry);
+
 next:
         current_offset -= 32;
 
@@ -128,6 +146,8 @@ next:
     } while (current_offset >= 0); 
 
     free(cluster_data);
+
+    return dir;
 }
 
 // Returns cluster count and reads cluster data.
@@ -167,7 +187,13 @@ int main() {
     printf("Cluster base: %d\n", myfat.cluster_base);
 
     // Прочитать записи каталога в корневой директории
-    read_directory(&myfat, myfat.fat->root_directory_offset_in_clusters);
+    direntry_t* dir = read_directory(&myfat, myfat.fat->root_directory_offset_in_clusters);
+    direntry_t* orig = dir;
+
+    do {
+        printf("T: %d; Name: %s; Size: %zu; (-> %p)\n", dir->type, dir->name, dir->size, dir->next);
+        dir = dir->next;
+    } while(dir);
 
     // Пример: чтение данных файла (необходимо указать правильный кластер)
     // read_file_data(&myfat, 2);

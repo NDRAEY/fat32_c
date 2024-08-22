@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "vfs.h"
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -79,6 +80,6 @@ typedef struct {
     uint32_t file_size;
 } __attribute__((packed)) DirectoryEntry_t;
 
-void read_directory(fat_t* fat, uint32_t start_cluster);
+direntry_t* read_directory(fat_t* fat, uint32_t start_cluster);
 void read_file_data(fat_t* fat, uint32_t start_cluster);
 size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* out);
