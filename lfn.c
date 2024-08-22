@@ -1,8 +1,7 @@
+#include "lfn.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "lfn.h"
 
 void LFN2SFN(const char* in_filename, char* out_filename) {
     int filename_len = strlen(in_filename);
