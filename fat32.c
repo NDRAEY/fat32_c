@@ -1,4 +1,5 @@
 #include "fat32.h"
+#include "fat_utf16_utf8.h"
 #include "lfn.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@ void fat32_init(const char* filename, fat_t* fat) {
     uint32_t two_fats = info->fat_size_in_sectors * 2;
     uint32_t tot_cluster = (info->reserved_sectors + two_fats) + ((info->root_directory_offset_in_clusters - 2) * info->sectors_per_cluster);
 
+    fat->cluster_base = ((info->reserved_sectors + two_fats) - 2) * info->sectors_per_cluster * info->bytes_per_sector;
     fat->root_directory_offset = tot_cluster * info->bytes_per_sector;
 
     fat->fat_chain = calloc(fat->fat_size, 1);
@@ -37,7 +39,7 @@ void print_directory_entry(DirectoryEntry_t* entry) {
     char filename[13];
     snprintf(filename, sizeof(filename), "%.8s.%.3s", entry->name, entry->ext);
     if (entry->attributes & ATTR_DIRECTORY) {
-        printf("[DIR ] %s\n", filename);
+        printf("[DIR ] %s (Attrs: %x)\n", filename, entry->attributes);
     } else {
         printf("[FILE] %s, Size: %u bytes\n", filename, entry->file_size);
     }
@@ -46,54 +48,126 @@ void print_directory_entry(DirectoryEntry_t* entry) {
 void read_directory(fat_t* fat, uint32_t start_cluster) {
     printf("Directory cluster: %d\n", start_cluster);
 
+    uint32_t cluster_count = read_cluster_chain(fat, start_cluster, true, NULL);
+
+    printf("Directory at cluster: %d uses %d clusters\n", start_cluster, cluster_count);
+
+    char* cluster_data = calloc(cluster_count, fat->cluster_size);
+    read_cluster_chain(fat, start_cluster, false, cluster_data);
+
+    printf("%c\n", cluster_data[0]);
+
+    int32_t current_offset = cluster_count * fat->cluster_size - 32;   // We must start from the end.
+
+    printf("Offset: %d\n", current_offset);
+
     uint32_t cluster_size = fat->cluster_size;
     uint32_t offset = start_cluster * cluster_size;
     fseek(fat->image, offset, SEEK_SET);
 
-    DirectoryEntry_t entry;
-    while (fread(&entry, sizeof(DirectoryEntry_t), 1, fat->image) != 0) {
-        if (entry.name[0] == 0x00) {
-            // Конец каталога
-            break;
+    // HINT: Both LFN and directory entry are 32 bytes long.
+    DirectoryEntry_t* prev = (DirectoryEntry_t*)(cluster_data + cluster_count);
+    uint16_t in_name_buffer[256] = {0};
+    size_t in_name_ptr = 0;
+    char out_name_buffer[256] = {0};
+    do {
+        printf("Offset: %d\n", current_offset);
+        DirectoryEntry_t* entry = (DirectoryEntry_t*)(cluster_data + current_offset);
+
+        if (entry->name[0] == 0x00) {
+            goto next;
         }
-        if (entry.name[0] == 0xE5) {
+
+        if ((uint8_t)entry->name[0] == 0xE5) {
             // Удалённый файл
-            continue;
+            goto next;
         }
 
-        if (entry.attributes & ATTR_LONG_FILE_NAME) {
-            printf("^--- Has LFN\n");
+        printf("Entry\n");
+        
+        if (entry->attributes & ATTR_LONG_FILE_NAME) {
+            printf("LFN!\n");
 
-            LFN_t lfn;
+            LFN_t* lfn = (LFN_t*)(cluster_data + current_offset);
 
-            fseek(fat->image, ftell(fat->image), SEEK_SET);
-            
-            fread(&lfn, sizeof(LFN_t), 1, fat->image);
+            printf("LFN nr: %x\n", lfn->attr_number);
 
-            printf("Attr: %x\n", lfn.attr_number);
+            for(int p1 = 0; p1 < 5; p1++) {
+                if(lfn->first_name_chunk[p1] == 0x0000) {
+                    goto lfn_next;
+                }
+
+                in_name_buffer[in_name_ptr++] = lfn->first_name_chunk[p1];
+            }
+
+            for(int p2 = 0; p2 < 6; p2++) {
+                if(lfn->second_name_chunk[p2] == 0x0000) {
+                    goto lfn_next;
+                }
+
+                in_name_buffer[in_name_ptr++] = lfn->second_name_chunk[p2];
+            }
+           
+            for(int p3 = 0; p3 < 2; p3++) {
+                if(lfn->third_name_chunk[p3] == 0x0000) {
+                    goto lfn_next;
+                }
+
+                in_name_buffer[in_name_ptr++] = lfn->third_name_chunk[p3];
+            }
+
+lfn_next:
+            if(lfn->attr_number & 0x40) {
+                printf("Last\n");
+
+                utf16_to_utf8(in_name_buffer, in_name_ptr, out_name_buffer);
+
+                printf("=> %s\n", out_name_buffer);
+
+                memset(in_name_buffer, 0, 512);
+                memset(out_name_buffer, 0, 256);
+                in_name_ptr = 0;
+            }
+
+            current_offset -= 32;
+            continue;
             // Обработка длинных имён файлов здесь, если необходимо
             // Например: read_long_file_name(fat, entry.start_cluster);
-        }
+        } 
         
-        print_directory_entry(&entry);
-    }
+        print_directory_entry(entry);
+next:
+        current_offset -= 32;
+
+        prev = entry;
+    } while (current_offset >= 0); 
+
+    free(cluster_data);
 }
 
-void read_file_data(fat_t* fat, uint32_t start_cluster) {
+// Returns cluster count and reads cluster data.
+size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* out) {
+    uint32_t cluster_count = 0;
+
     uint32_t cluster_size = fat->cluster_size;
     uint32_t cluster = start_cluster;
     while (cluster < 0x0FFFFFF8) {  // Проверка на последний кластер в цепочке
-        uint32_t offset = cluster * cluster_size;
-        fseek(fat->image, offset, SEEK_SET);
-        uint8_t buffer[cluster_size];
-        fread(buffer, cluster_size, 1, fat->image);
+        printf("Cluster: %x -> %x\n", cluster, fat->fat_chain[cluster]);
+        if(!probe) {
+            printf("Read\n");
+            uint32_t offset = fat->cluster_base + (cluster * cluster_size);
+            printf("%x\n", offset);
+            fseek(fat->image, offset, SEEK_SET);
 
-        // Обработка данных файла (например, сохранить в файл или вывести на экран)
-        // fwrite(buffer, 1, cluster_size, output_file);
-
+            fread(((char*)out) + (cluster_count * cluster_size), cluster_size, 1, fat->image);
+        }
+        
         // Перейти к следующему кластеру
         cluster = fat->fat_chain[cluster];
+        cluster_count++;
     }
+
+    return cluster_count;
 }
 
 int main() {
@@ -106,9 +180,11 @@ int main() {
     printf("Fat size: %d\n", myfat.fat_size);
     printf("Reserved FAT offset: %d\n", myfat.reserved_fat_offset);
     printf("Root directory offset: %d\n", myfat.root_directory_offset);
+    printf("Root directory cluster: %d\n", myfat.fat->root_directory_offset_in_clusters);
+    printf("Cluster base: %d\n", myfat.cluster_base);
 
     // Прочитать записи каталога в корневой директории
-    read_directory(&myfat, myfat.root_directory_offset / myfat.cluster_size);
+    read_directory(&myfat, myfat.fat->root_directory_offset_in_clusters);
 
     // Пример: чтение данных файла (необходимо указать правильный кластер)
     // read_file_data(&myfat, 2);

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -13,7 +14,9 @@ typedef unsigned int u32;
 #define ATTR_VOLUME_ID 0x08
 #define ATTR_DIRECTORY 0x10
 #define ATTR_ARCHIVE 0x20
+
 #define ATTR_LONG_FILE_NAME 0x0F
+#define ATTR_LFN_MASK 0x3F
 
 typedef struct {
     char bootcode[3];
@@ -57,6 +60,7 @@ typedef struct {
     uint32_t fat_size;
     uint32_t reserved_fat_offset;
     uint32_t root_directory_offset;
+    uint32_t cluster_base;
 } fat_t;
 
 typedef struct {
@@ -77,3 +81,4 @@ typedef struct {
 
 void read_directory(fat_t* fat, uint32_t start_cluster);
 void read_file_data(fat_t* fat, uint32_t start_cluster);
+size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* out);
