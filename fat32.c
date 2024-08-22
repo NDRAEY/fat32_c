@@ -122,7 +122,6 @@ lfn_next:
             // Например: read_long_file_name(fat, entry.start_cluster);
         } 
        
-        printf("?= %s", out_name_buffer);
         print_directory_entry(entry);
 next:
         current_offset -= 32;
