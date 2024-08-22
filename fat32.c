@@ -39,7 +39,7 @@ void print_directory_entry(DirectoryEntry_t* entry) {
     char filename[13];
     snprintf(filename, sizeof(filename), "%.8s.%.3s", entry->name, entry->ext);
     if (entry->attributes & ATTR_DIRECTORY) {
-        printf("[DIR ] %s (Attrs: %x)\n", filename, entry->attributes);
+        printf("[DIR ] %s     @%d\n", filename, (entry->high_cluster << 16) | entry->low_cluster);
     } else {
         printf("[FILE] %s, Size: %u bytes\n", filename, entry->file_size);
     }
@@ -55,11 +55,7 @@ void read_directory(fat_t* fat, uint32_t start_cluster) {
     char* cluster_data = calloc(cluster_count, fat->cluster_size);
     read_cluster_chain(fat, start_cluster, false, cluster_data);
 
-    printf("%c\n", cluster_data[0]);
-
     int32_t current_offset = cluster_count * fat->cluster_size - 32;   // We must start from the end.
-
-    printf("Offset: %d\n", current_offset);
 
     uint32_t cluster_size = fat->cluster_size;
     uint32_t offset = start_cluster * cluster_size;
@@ -71,7 +67,6 @@ void read_directory(fat_t* fat, uint32_t start_cluster) {
     size_t in_name_ptr = 0;
     char out_name_buffer[256] = {0};
     do {
-        printf("Offset: %d\n", current_offset);
         DirectoryEntry_t* entry = (DirectoryEntry_t*)(cluster_data + current_offset);
 
         if (entry->name[0] == 0x00) {
@@ -83,14 +78,8 @@ void read_directory(fat_t* fat, uint32_t start_cluster) {
             goto next;
         }
 
-        printf("Entry\n");
-        
         if (entry->attributes & ATTR_LONG_FILE_NAME) {
-            printf("LFN!\n");
-
             LFN_t* lfn = (LFN_t*)(cluster_data + current_offset);
-
-            printf("LFN nr: %x\n", lfn->attr_number);
 
             for(int p1 = 0; p1 < 5; p1++) {
                 if(lfn->first_name_chunk[p1] == 0x0000) {
@@ -118,11 +107,9 @@ void read_directory(fat_t* fat, uint32_t start_cluster) {
 
 lfn_next:
             if(lfn->attr_number & 0x40) {
-                printf("Last\n");
-
                 utf16_to_utf8(in_name_buffer, in_name_ptr, out_name_buffer);
 
-                printf("=> %s\n", out_name_buffer);
+                printf("Long file name: %s\n", out_name_buffer);
 
                 memset(in_name_buffer, 0, 512);
                 memset(out_name_buffer, 0, 256);
@@ -152,11 +139,8 @@ size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* 
     uint32_t cluster_size = fat->cluster_size;
     uint32_t cluster = start_cluster;
     while (cluster < 0x0FFFFFF8) {  // Проверка на последний кластер в цепочке
-        printf("Cluster: %x -> %x\n", cluster, fat->fat_chain[cluster]);
         if(!probe) {
-            printf("Read\n");
             uint32_t offset = fat->cluster_base + (cluster * cluster_size);
-            printf("%x\n", offset);
             fseek(fat->image, offset, SEEK_SET);
 
             fread(((char*)out) + (cluster_count * cluster_size), cluster_size, 1, fat->image);
