@@ -43,7 +43,7 @@ void print_directory_entry(DirectoryEntry_t* entry) {
     if (entry->attributes & ATTR_DIRECTORY) {
         printf("[DIR ] %s     @%d\n", filename, (entry->high_cluster << 16) | entry->low_cluster);
     } else {
-        printf("[FILE] %s, Size: %u bytes\n", filename, entry->file_size);
+        printf("[FILE] %s, Size: %u bytes  @%d\n", filename, entry->file_size, (entry->high_cluster << 16) | entry->low_cluster);
     }
 }
 
@@ -172,6 +172,52 @@ size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* 
 
     return cluster_count;
 }
+
+// Returns count of read bytes!!!
+size_t read_cluster_chain_advanced(fat_t* fat, uint32_t start_cluster, size_t byte_offset, size_t size, bool probe, void* out) {
+    uint32_t cluster_size = fat->cluster_size;
+    uint32_t cluster = start_cluster;
+    size_t total_bytes_read = 0;
+    size_t cluster_count = 0;
+    
+    // Skip initial clusters based on byte_offset
+    while (byte_offset >= cluster_size) {
+        cluster = fat->fat_chain[cluster];
+        byte_offset -= cluster_size;
+        cluster_count++;
+        
+        if (cluster >= 0x0FFFFFF8) {
+            return total_bytes_read;  // End of chain reached
+        }
+    }
+
+    // Now we are positioned at the correct cluster and byte offset within it
+    while (cluster < 0x0FFFFFF8 && total_bytes_read < size) {
+        if (!probe) {
+            uint32_t offset = fat->cluster_base + (cluster * cluster_size) + byte_offset;
+            size_t bytes_to_read = cluster_size - byte_offset;
+            
+            // Ensure we don’t read more than requested
+            if (bytes_to_read > size - total_bytes_read) {
+                bytes_to_read = size - total_bytes_read;
+            }
+
+            printf("Reading from offset: %x, bytes: %zu\n", offset, bytes_to_read);
+            fseek(fat->image, offset, SEEK_SET);
+            fread(((char*)out) + total_bytes_read, bytes_to_read, 1, fat->image);
+
+            total_bytes_read += bytes_to_read;
+        }
+
+        // Move to the next cluster in the chain
+        cluster = fat->fat_chain[cluster];
+        cluster_count++;
+        byte_offset = 0;  // Only the first iteration needs a non-zero byte offset
+    }
+
+    return total_bytes_read;
+}
+
 
 int main() {
     fat_t myfat;
