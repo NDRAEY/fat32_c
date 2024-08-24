@@ -267,9 +267,59 @@ size_t fat32_search_on_cluster(fat_t* fat, size_t cluster, const char* name) {
         free(k);
     } while(orig);
 
-
     return found_cluster;
 }
+
+size_t fat32_search(fat_t* fat, const char* path) {
+    printf("Searching: %s\n", path);
+
+    // Start at the root directory
+    size_t cluster = fat->fat->root_directory_offset_in_clusters;
+
+    // Temporary buffer for directory or file names
+    char temp_name[256] = {0};
+
+    while (*path != '\0') {
+        // Skip leading slashes (handles cases like ///a///b/c.txt)
+        while (*path == '/') {
+            path++;
+        }
+
+        if (*path == '\0') {
+            break; // Reached end of path
+        }
+
+        // Find the end of the current directory or file name
+        const char* next_slash = path;
+        while (*next_slash != '/' && *next_slash != '\0') {
+            next_slash++;
+        }
+
+        // Calculate length of the name
+        size_t name_length = next_slash - path;
+        if (name_length >= sizeof(temp_name)) {
+            // Name too long to fit in our buffer
+            return 0;
+        }
+
+        // Copy the name into temp_name
+        strncpy(temp_name, path, name_length);
+        temp_name[name_length] = '\0';
+
+        // Search for the current segment in the current cluster
+        cluster = fat32_search_on_cluster(fat, cluster, temp_name);
+        if (cluster == 0) {
+            // If not found, return 0
+            return 0;
+        }
+
+        // Move path pointer to the next segment
+        path = next_slash;
+    }
+
+    return cluster;
+}
+
 
 int main() {
     fat_t myfat;
@@ -292,6 +342,17 @@ int main() {
 
     // Пример: чтение данных файла (необходимо указать правильный кластер)
     // read_file_data(&myfat, 2);
+
+    /*size_t cluster = fat32_search(&myfat, "/test/c/Zeraora.txt");
+
+    printf("Cluster: %zu\n", cluster);
+
+    char mem[41] = {0};
+
+    read_cluster_chain_advanced(&myfat, cluster, 0, 40, false, mem);
+
+    printf("'%s'\n", mem);
+    */
 
     fat32_deinit(&myfat);
 }
