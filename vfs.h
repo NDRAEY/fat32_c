@@ -33,6 +33,8 @@ typedef struct direntry {
     size_t size;
     datetime_t created;
     datetime_t modified;
+    
+    void* priv_data;
 
     struct direntry* next;
 } direntry_t;

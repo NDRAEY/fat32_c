@@ -3,6 +3,7 @@
 #include "lfn.h"
 #include "vfs.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,13 +116,14 @@ lfn_next:
             if(lfn->attr_number & 0x40) {
                 utf16_to_utf8(in_name_buffer, in_name_ptr, out_name_buffer);
 
-                printf("Long file name: %s\n", out_name_buffer);
+                printf("[%.8s] Long file name: %s\n", prev->name, out_name_buffer);
        
                 dirptr->name = calloc(256, 1);
                 memcpy(dirptr->name, out_name_buffer, 256);
 
                 dirptr->type = (prev->attributes & ATTR_DIRECTORY) ? ENT_DIRECTORY : ENT_FILE;
                 dirptr->size = prev->file_size;
+                dirptr->priv_data = (void*)(size_t)((prev->high_cluster << 16) | prev->low_cluster);
 
                 if(current_offset != 0) {
                     dirptr->next = calloc(1, sizeof(direntry_t));
@@ -139,6 +141,20 @@ lfn_next:
        
         print_directory_entry(entry);
 
+        if(!(current_offset - 32 >= 0 && ((entry - 1)->attributes & ATTR_LONG_FILE_NAME))) {
+            dirptr->name = calloc(12, 1);
+            memcpy(dirptr->name, entry->name, 8);
+            memcpy(dirptr->name + 8, entry->ext, 3);
+
+            dirptr->type = (entry->attributes & ATTR_DIRECTORY) ? ENT_DIRECTORY : ENT_FILE;
+            dirptr->size = entry->file_size;
+            dirptr->priv_data = (void*)(size_t)((entry->high_cluster << 16) | entry->low_cluster);
+
+            if(current_offset != 0) {
+                dirptr->next = calloc(1, sizeof(direntry_t));
+                dirptr = dirptr->next;
+            }
+        }
 next:
         current_offset -= 32;
 
@@ -180,7 +196,7 @@ size_t read_cluster_chain_advanced(fat_t* fat, uint32_t start_cluster, size_t by
     size_t total_bytes_read = 0;
     size_t cluster_count = 0;
     
-    // Skip initial clusters based on byte_offset
+// Skip initial clusters based on byte_offset
     while (byte_offset >= cluster_size) {
         cluster = fat->fat_chain[cluster];
         byte_offset -= cluster_size;
@@ -202,7 +218,6 @@ size_t read_cluster_chain_advanced(fat_t* fat, uint32_t start_cluster, size_t by
                 bytes_to_read = size - total_bytes_read;
             }
 
-            printf("Reading from offset: %x, bytes: %zu\n", offset, bytes_to_read);
             fseek(fat->image, offset, SEEK_SET);
             fread(((char*)out) + total_bytes_read, bytes_to_read, 1, fat->image);
 
@@ -218,6 +233,43 @@ size_t read_cluster_chain_advanced(fat_t* fat, uint32_t start_cluster, size_t by
     return total_bytes_read;
 }
 
+void fast_traverse(direntry_t* dir) {
+    do {
+        printf("T: %d; Name: %s; Size: %zu; (-> %p) (priv: %u)\n", dir->type, dir->name, dir->size, dir->next, dir->priv_data);
+        dir = dir->next;
+    } while(dir);
+}
+
+size_t fat32_search_on_cluster(fat_t* fat, size_t cluster, const char* name) {
+    uint32_t found_cluster = 0;
+
+    direntry_t* entries = read_directory(fat, cluster);
+    direntry_t* orig = entries;
+
+    fast_traverse(entries);
+
+    do {
+        printf("1: '%s'; 2: '%s'; %d\n", entries->name, name, strcmp(entries->name, name));
+        if(strcmp(entries->name, name) == 0) {
+            found_cluster = (uint32_t)(size_t)entries->priv_data;
+
+            printf("Found cluster: %d (%p)\n", found_cluster, entries->priv_data);
+            break;
+        }
+
+        entries = entries->next;
+    } while(entries);
+
+    // FIXME: KLUDGE! Replace it with `dirclose` when port to Veonter (Other OS)
+    do {
+        direntry_t* k = orig;
+        orig = orig->next;
+        free(k);
+    } while(orig);
+
+
+    return found_cluster;
+}
 
 int main() {
     fat_t myfat;
@@ -236,10 +288,7 @@ int main() {
     direntry_t* dir = read_directory(&myfat, myfat.fat->root_directory_offset_in_clusters);
     direntry_t* orig = dir;
 
-    do {
-        printf("T: %d; Name: %s; Size: %zu; (-> %p)\n", dir->type, dir->name, dir->size, dir->next);
-        dir = dir->next;
-    } while(dir);
+    fast_traverse(dir);
 
     // Пример: чтение данных файла (необходимо указать правильный кластер)
     // read_file_data(&myfat, 2);
