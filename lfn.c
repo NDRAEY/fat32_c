@@ -37,6 +37,8 @@ void LFN2SFN(const char* in_filename, char* out_filename) {
         } else {
             memcpy(out_filename, temp, name_len);
         }
+    } else {
+        memcpy(out_filename, temp, filename_len);
     }
 
     free(temp);

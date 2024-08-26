@@ -9,7 +9,7 @@
 #include <string.h>
 
 void fat32_init(const char* filename, fat_t* fat) {
-    FILE* file = fopen(filename, "rb");
+    FILE* file = fopen(filename, "r+b");
     fat->image = file;
 
     FATInfo_t* info = calloc(1, sizeof(FATInfo_t));
@@ -49,11 +49,7 @@ void print_directory_entry(DirectoryEntry_t* entry) {
 }
 
 direntry_t* read_directory(fat_t* fat, uint32_t start_cluster) {
-    printf("Directory cluster: %d\n", start_cluster);
-
     uint32_t cluster_count = read_cluster_chain(fat, start_cluster, true, NULL);
-
-    printf("Directory at cluster: %d uses %d clusters\n", start_cluster, cluster_count);
 
     char* cluster_data = calloc(cluster_count, fat->cluster_size);
     read_cluster_chain(fat, start_cluster, false, cluster_data);
@@ -67,7 +63,6 @@ direntry_t* read_directory(fat_t* fat, uint32_t start_cluster) {
     direntry_t* dir = calloc(1, sizeof(direntry_t));
     direntry_t* dirptr = dir;
 
-    // HINT: Both LFN and directory entry are 32 bytes long.
     DirectoryEntry_t* prev = (DirectoryEntry_t*)(cluster_data + cluster_count);
     uint16_t in_name_buffer[256] = {0};
     size_t in_name_ptr = 0;
@@ -81,7 +76,6 @@ direntry_t* read_directory(fat_t* fat, uint32_t start_cluster) {
         }
 
         if ((uint8_t)entry->name[0] == 0xE5) {
-            // Удалённый файл
             goto next;
         }
 
@@ -116,8 +110,6 @@ lfn_next:
             if(lfn->attr_number & 0x40) {
                 utf16_to_utf8(in_name_buffer, in_name_ptr, out_name_buffer);
 
-                printf("[%.8s] Long file name: %s\n", prev->name, out_name_buffer);
-       
                 dirptr->name = calloc(256, 1);
                 memcpy(dirptr->name, out_name_buffer, 256);
 
@@ -139,8 +131,6 @@ lfn_next:
             continue;
         } 
        
-        print_directory_entry(entry);
-
         if(!(current_offset - 32 >= 0 && ((entry - 1)->attributes & ATTR_LONG_FILE_NAME))) {
             dirptr->name = calloc(12, 1);
             memcpy(dirptr->name, entry->name, 8);
@@ -166,7 +156,6 @@ next:
     return dir;
 }
 
-// Returns cluster count and reads cluster data.
 size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* out) {
     uint32_t cluster_count = 0;
 
@@ -181,7 +170,6 @@ size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* 
             fread(((char*)out) + (cluster_count * cluster_size), cluster_size, 1, fat->image);
         }
         
-        // Перейти к следующему кластеру
         cluster = fat->fat_chain[cluster];
         cluster_count++;
     }
@@ -189,14 +177,12 @@ size_t read_cluster_chain(fat_t* fat, uint32_t start_cluster, bool probe, void* 
     return cluster_count;
 }
 
-// Returns count of read bytes!!!
 size_t read_cluster_chain_advanced(fat_t* fat, uint32_t start_cluster, size_t byte_offset, size_t size, bool probe, void* out) {
     uint32_t cluster_size = fat->cluster_size;
     uint32_t cluster = start_cluster;
     size_t total_bytes_read = 0;
     size_t cluster_count = 0;
     
-// Skip initial clusters based on byte_offset
     while (byte_offset >= cluster_size) {
         cluster = fat->fat_chain[cluster];
         byte_offset -= cluster_size;
@@ -207,13 +193,11 @@ size_t read_cluster_chain_advanced(fat_t* fat, uint32_t start_cluster, size_t by
         }
     }
 
-    // Now we are positioned at the correct cluster and byte offset within it
     while (cluster < 0x0FFFFFF8 && total_bytes_read < size) {
         if (!probe) {
             uint32_t offset = fat->cluster_base + (cluster * cluster_size) + byte_offset;
             size_t bytes_to_read = cluster_size - byte_offset;
             
-            // Ensure we don’t read more than requested
             if (bytes_to_read > size - total_bytes_read) {
                 bytes_to_read = size - total_bytes_read;
             }
@@ -224,7 +208,6 @@ size_t read_cluster_chain_advanced(fat_t* fat, uint32_t start_cluster, size_t by
             total_bytes_read += bytes_to_read;
         }
 
-        // Move to the next cluster in the chain
         cluster = fat->fat_chain[cluster];
         cluster_count++;
         byte_offset = 0;  // Only the first iteration needs a non-zero byte offset
@@ -260,7 +243,7 @@ size_t fat32_search_on_cluster(fat_t* fat, size_t cluster, const char* name) {
         entries = entries->next;
     } while(entries);
 
-    // FIXME: KLUDGE! Replace it with `dirclose` when port to Veonter (Other OS)
+    /* FIXME: KLUDGE! Replace it with `dirclose` when port to Veonter (Other OS) */
     do {
         direntry_t* k = orig;
         orig = orig->next;
@@ -273,14 +256,11 @@ size_t fat32_search_on_cluster(fat_t* fat, size_t cluster, const char* name) {
 size_t fat32_search(fat_t* fat, const char* path) {
     printf("Searching: %s\n", path);
 
-    // Start at the root directory
     size_t cluster = fat->fat->root_directory_offset_in_clusters;
 
-    // Temporary buffer for directory or file names
     char temp_name[256] = {0};
 
     while (*path != '\0') {
-        // Skip leading slashes (handles cases like ///a///b/c.txt)
         while (*path == '/') {
             path++;
         }
@@ -289,37 +269,526 @@ size_t fat32_search(fat_t* fat, const char* path) {
             break; // Reached end of path
         }
 
-        // Find the end of the current directory or file name
         const char* next_slash = path;
         while (*next_slash != '/' && *next_slash != '\0') {
             next_slash++;
         }
 
-        // Calculate length of the name
         size_t name_length = next_slash - path;
         if (name_length >= sizeof(temp_name)) {
-            // Name too long to fit in our buffer
             return 0;
         }
 
-        // Copy the name into temp_name
         strncpy(temp_name, path, name_length);
         temp_name[name_length] = '\0';
 
-        // Search for the current segment in the current cluster
         cluster = fat32_search_on_cluster(fat, cluster, temp_name);
         if (cluster == 0) {
-            // If not found, return 0
             return 0;
         }
 
-        // Move path pointer to the next segment
         path = next_slash;
     }
 
     return cluster;
 }
 
+size_t fat32_get_file_size(fat_t* fat, const char* filename) {
+    size_t len = strlen(filename);
+    const char* end = filename + len;
+
+    while(*end != '/') {
+        end--;
+    }
+
+    char path[256] = {0};
+    char e_filename[256] = {0};
+
+    strncpy(path, filename, end - filename);
+
+    printf("Path: %s\n", path);
+
+    strncpy(e_filename, end + 1, len - (end - filename));
+
+    printf("Filename: %s\n", e_filename);
+
+    
+    size_t clust = fat32_search(fat, path);
+
+    if(clust == 0) {
+        return clust;
+    }
+
+    direntry_t* entries = read_directory(fat, clust);
+    direntry_t* orig = entries;
+
+    size_t sz = 0;
+
+    do {
+        printf("-> %s\n", entries->name);
+        
+        if(strcmp(entries->name, e_filename) == 0) {
+            sz = entries->size;
+            break;
+        }
+        
+        entries = entries->next;
+    } while(entries);
+
+
+    return sz;
+}
+
+
+size_t fat32_find_free_cluster(fat_t* fat) {
+    for(int i = 0, sz = fat->fat_size / sizeof(uint32_t); i < sz; i++) {
+        if(fat->fat_chain[i] == 0) {
+            return i;
+        }
+    }
+
+    return 0;
+}
+
+void fat32_find_free_entry(fat_t* fat, size_t dir_cluster, size_t* out_cluster_number, size_t* out_offset) {
+    size_t cluster_count = read_cluster_chain(fat, dir_cluster, true, NULL);
+
+    char* cluster_data = calloc(cluster_count, fat->cluster_size);
+    read_cluster_chain(fat, dir_cluster, false, cluster_data);
+
+    size_t entry_size = 32;  // Directory entry size is 32 bytes
+    size_t total_entries = (cluster_count * fat->cluster_size) / entry_size;
+
+    for (size_t i = 0; i < total_entries; i++) {
+        char* entry = cluster_data + (i * entry_size);
+
+        if (entry[0] == 0x00 || entry[0] == 0xE5) {
+            size_t cluster_index = i / (fat->cluster_size / entry_size);
+            size_t offset_within_cluster = (i % (fat->cluster_size / entry_size)) * entry_size;
+
+            *out_cluster_number = dir_cluster;
+            *out_offset = offset_within_cluster;
+
+            free(cluster_data);
+            return;
+        }
+    }
+
+    *out_cluster_number = 0;
+    *out_offset = 0;
+    free(cluster_data);
+}
+
+size_t fat32_get_last_cluster_in_chain(fat_t* fat, size_t start_cluster) {
+    if (start_cluster < 2 || start_cluster >= 0x0FFFFFF8) {
+        return 0;  // Invalid start cluster
+    }
+
+    size_t current_cluster = start_cluster;
+
+    while (current_cluster < 0x0FFFFFF8) {
+        size_t next_cluster = fat->fat_chain[current_cluster];
+
+        if (next_cluster >= 0x0FFFFFF8) {
+            break;  // Reached the end of the chain
+        }
+
+        current_cluster = next_cluster;
+    }
+
+    return current_cluster;
+}
+
+void fat32_allocate_cluster(fat_t* fat, size_t for_cluster) {
+    size_t last_cluster = fat32_get_last_cluster_in_chain(fat, for_cluster);
+
+    if (last_cluster == 0) {
+        return;
+    }
+
+    size_t new_cluster = fat32_find_free_cluster(fat);
+
+    if (new_cluster == 0) {
+        return;
+    }
+
+    fat->fat_chain[last_cluster] = new_cluster;
+
+    fat->fat_chain[new_cluster] = 0x0FFFFFF8;
+
+    uint32_t cluster_size = fat->cluster_size;
+    uint32_t offset = fat->cluster_base + (new_cluster * cluster_size);
+    fseek(fat->image, offset, SEEK_SET);
+    char* zero_buffer = calloc(1, cluster_size);
+    fwrite(zero_buffer, cluster_size, 1, fat->image);
+    free(zero_buffer);
+}
+
+void fat32_flush(fat_t* f) {
+    fseek(f->image, f->fat_offset, SEEK_SET);
+    fwrite(f->fat_chain, 1, f->fat_size, f->image);
+}
+
+size_t fat32_create_file(fat_t* fat, size_t dir_cluster, const char* filename, bool is_file) {
+    if (filename == NULL || strlen(filename) == 0 || strlen(filename) > 255) {
+        return 0;
+    }
+
+    size_t out_cluster_number = 0;
+    size_t out_offset = 0;    // PIKA PIKA 
+    fat32_find_free_entry(fat, dir_cluster, &out_cluster_number, &out_offset);
+
+    printf("%d %d\n", out_cluster_number, out_offset);
+
+    if (out_cluster_number == 0) {
+        return 0;
+    }
+
+    size_t new_cluster = fat32_find_free_cluster(fat);
+    if (new_cluster == 0) {
+        return 0;
+    }
+
+    printf("Cluster: %d\n", new_cluster);
+
+    fat->fat_chain[new_cluster] = 0x0FFFFFF8;
+
+    char sfn[12] = {0};  // 8.3 format (8 chars + '.' + 3 chars)
+    LFN2SFN(filename, sfn);
+
+    printf("SFN: %.11s\n", sfn);
+
+    DirectoryEntry_t entry = {0};
+    memset(&entry, 0, sizeof(DirectoryEntry_t));
+    memcpy(entry.name, sfn, 8);
+    memcpy(entry.ext, sfn + 8, 3);
+    entry.attributes = is_file ? 0x20 : 0x10; // 0x20 for files, 0x10 for directories
+    entry.high_cluster = (new_cluster >> 16) & 0xFFFF;
+    entry.low_cluster = new_cluster & 0xFFFF;
+    entry.file_size = 0; // Directories have size 0
+
+    if(!is_file) {
+        DirectoryEntry_t entry = {0};
+        memset(entry.name, ' ', 8);
+        memset(entry.ext, ' ', 3);
+
+        entry.attributes |= ATTR_DIRECTORY;
+
+        entry.name[0] = '.';
+
+        size_t off = fat->cluster_base + (new_cluster * fat->cluster_size);
+
+        fseek(fat->image, off, SEEK_SET);
+        fwrite(&entry, sizeof(DirectoryEntry_t), 1, fat->image);
+
+        entry.name[1] = '.';
+        fwrite(&entry, sizeof(DirectoryEntry_t), 1, fat->image);
+    }
+
+    uint32_t cluster_size = fat->cluster_size;
+    uint32_t entry_offset = fat->cluster_base + (out_cluster_number * cluster_size) + out_offset;
+    
+    unsigned short utf16_name[256] = {0};
+    utf8_to_utf16(filename, utf16_name);
+    
+    size_t lfn_entry_count = (strlen(filename) + 12) / 13;
+    
+    entry_offset += lfn_entry_count * 32;
+
+    for (size_t i = 0; i < lfn_entry_count; i++) {
+        LFN_t lfn_entry = {0};
+        lfn_entry.attribute = ATTR_LONG_FILE_NAME;
+        lfn_entry.checksum = lfn_checksum(sfn);
+
+        printf("LFN!\n");
+
+        lfn_entry.attr_number = (i == lfn_entry_count - 1) ? 0x40 : 0x00; // Set LAST_LONG_ENTRY flag for the last entry
+        lfn_entry.attr_number |= (uint8_t)(i + 1); // Set the sequence number
+
+        size_t char_index = i * 13;
+        for (int p1 = 0; p1 < 5 && char_index < strlen(filename); p1++) {
+            lfn_entry.first_name_chunk[p1] = utf16_name[char_index++];
+        }
+        for (int p2 = 0; p2 < 6 && char_index < strlen(filename); p2++) {
+            lfn_entry.second_name_chunk[p2] = utf16_name[char_index++];
+        }
+        for (int p3 = 0; p3 < 2 && char_index < strlen(filename); p3++) {
+            lfn_entry.third_name_chunk[p3] = utf16_name[char_index++];
+        }
+
+        entry_offset -= 32; // Move to the position for the LFN entry
+        fseek(fat->image, entry_offset, SEEK_SET);
+        fwrite(&lfn_entry, sizeof(LFN_t), 1, fat->image);
+    }
+
+    entry_offset += lfn_entry_count * 32;
+    
+    fseek(fat->image, entry_offset, SEEK_SET);
+    fwrite(&entry, sizeof(DirectoryEntry_t), 1, fat->image);
+
+    fat32_flush(fat);
+
+    return new_cluster;
+}
+
+size_t fat32_write_experimental(fat_t* fat, size_t start_cluster, size_t file_size, size_t offset, size_t size, size_t* out_file_size, const char* buffer) {
+    size_t bytes_written = 0;
+    size_t cluster_size = fat->cluster_size;
+    size_t current_cluster = start_cluster;
+
+    // Calculate the offset within the first cluster
+    size_t cluster_offset = offset % cluster_size;
+
+    // Calculate the number of clusters needed for the write
+    size_t initial_cluster_offset = offset / cluster_size;
+    size_t end_offset = offset + size;
+    size_t total_clusters_needed = (end_offset + cluster_size - 1) / cluster_size;
+
+    // Traverse to the correct starting cluster based on the initial offset
+    for (size_t i = 0; i < initial_cluster_offset; i++) {
+        current_cluster = fat->fat_chain[current_cluster];
+        if (current_cluster >= 0x0FFFFFF8) {
+            // Reached the end of the chain unexpectedly
+            current_cluster = 0;
+            break;
+        }
+    }
+
+    if (current_cluster == 0) {
+        // Handle file extension if needed
+        current_cluster = fat32_find_free_cluster(fat);
+        if (current_cluster == 0) {
+            // No free clusters available, cannot proceed
+            *out_file_size = file_size;
+            return 0;
+        }
+        fat->fat_chain[start_cluster] = current_cluster;
+    }
+
+    // Start writing data
+    size_t buffer_offset = 0;
+    while (buffer_offset < size) {
+        // Calculate the number of bytes to write in the current cluster
+        size_t write_size = cluster_size - cluster_offset;
+        if (write_size > size - buffer_offset) {
+            write_size = size - buffer_offset;
+        }
+
+        // Calculate the offset in the FAT image
+        size_t write_offset = fat->cluster_base + (current_cluster * cluster_size) + cluster_offset;
+
+        // Write the data
+        fseek(fat->image, write_offset, SEEK_SET);
+        fwrite(buffer + buffer_offset, 1, write_size, fat->image);
+
+        // Update tracking variables
+        buffer_offset += write_size;
+        bytes_written += write_size;
+        cluster_offset = 0; // Only the first cluster might have an initial offset
+
+        // Move to the next cluster if needed
+        if (buffer_offset < size) {
+            size_t next_cluster = fat->fat_chain[current_cluster];
+            if (next_cluster >= 0x0FFFFFF8) {
+                // Allocate a new cluster if needed
+                next_cluster = fat32_find_free_cluster(fat);
+                if (next_cluster == 0) {
+                    // No more clusters available
+                    break;
+                }
+                fat->fat_chain[current_cluster] = next_cluster;
+                fat->fat_chain[next_cluster] = 0x0FFFFFF8; // Mark new cluster as end of the chain
+            }
+            current_cluster = next_cluster;
+        }
+    }
+
+    // Update the file size if it has grown
+    *out_file_size = offset + bytes_written > file_size ? offset + bytes_written : file_size;
+
+    fat32_flush(fat);
+
+    return bytes_written;
+}
+
+void fat32_get_file_info_coords(fat_t* fat, uint32_t dir_cluster, const char* filename, size_t* out_cluster, size_t* out_offset) {
+    uint32_t cluster_size = fat->cluster_size;
+    uint32_t current_cluster = dir_cluster;
+    size_t current_offset = 0;
+
+    // Buffer to store the reconstructed LFN
+    uint16_t in_name_buffer[256] = {0};
+    size_t in_name_ptr = 0;
+    char out_name_buffer[256] = {0};
+
+    while (current_cluster < 0x0FFFFFF8) {
+        char* cluster_data = calloc(1, cluster_size);
+        read_cluster_chain(fat, current_cluster, false, cluster_data);
+
+        for (size_t offset = 0; offset < cluster_size; offset += 32) {
+            DirectoryEntry_t* entry = (DirectoryEntry_t*)(cluster_data + offset);
+
+            if (entry->name[0] == 0x00) {
+                // End of directory
+                free(cluster_data);
+                return;
+            }
+
+            if ((uint8_t)entry->name[0] == 0xE5) {
+                // Deleted entry, skip
+                continue;
+            }
+
+            if (entry->attributes & ATTR_LONG_FILE_NAME) {
+                // Handle LFN entry
+                LFN_t* lfn = (LFN_t*)(cluster_data + offset);
+                in_name_ptr = 0; // Reset the name pointer
+
+                for (int i = 0; i < 5; i++) {
+                    if (lfn->first_name_chunk[i] == 0x0000) break;
+                    in_name_buffer[in_name_ptr++] = lfn->first_name_chunk[i];
+                }
+
+                for (int i = 0; i < 6; i++) {
+                    if (lfn->second_name_chunk[i] == 0x0000) break;
+                    in_name_buffer[in_name_ptr++] = lfn->second_name_chunk[i];
+                }
+
+                for (int i = 0; i < 2; i++) {
+                    if (lfn->third_name_chunk[i] == 0x0000) break;
+                    in_name_buffer[in_name_ptr++] = lfn->third_name_chunk[i];
+                }
+
+                // If this is the last LFN part (indicated by bit 6 of the sequence number), process it
+                if (lfn->attr_number & 0x40) {
+                    utf16_to_utf8(in_name_buffer, in_name_ptr, out_name_buffer);
+
+                    // Compare the reconstructed LFN with the target filename
+                    if (strcmp(out_name_buffer, filename) == 0) {
+                        offset += (lfn->attr_number & ~0x40) * 32;
+
+                        bool ow = offset / fat->cluster_size;
+                        
+                        if(ow) {
+                            current_cluster++;
+                            offset %= fat->cluster_size;
+                        }
+
+                        *out_cluster = current_cluster;
+                        *out_offset = offset;
+                        free(cluster_data);
+                        return;
+                    }
+
+                    // Reset the buffers for the next file entry
+                    memset(in_name_buffer, 0, sizeof(in_name_buffer));
+                    memset(out_name_buffer, 0, sizeof(out_name_buffer));
+                }
+            } else if (!(entry->attributes & ATTR_LONG_FILE_NAME)) {
+                // Handle short file name (SFN) entries (non-LFN case)
+                char sfn[12] = {0};
+                memcpy(sfn, entry->name, 8);
+                if (entry->ext[0] != ' ') {
+                    strcat(sfn, ".");
+                    strncat(sfn, entry->ext, 3);
+                }
+
+                // Compare the SFN with the target filename
+                if (strcmp(sfn, filename) == 0) {
+                    *out_cluster = current_cluster;
+                    *out_offset = offset;
+                    free(cluster_data);
+                    return;
+                }
+            }
+        }
+
+        // Move to the next cluster in the chain
+        current_cluster = fat->fat_chain[current_cluster];
+        free(cluster_data);
+    }
+
+    // If we reach here, the file was not found
+    *out_cluster = 0;
+    *out_offset = 0;
+}
+
+DirectoryEntry_t fat32_read_file_info(fat_t* fat, size_t dir_clust, const char* file) {
+    size_t out_clust, out_offset;
+    DirectoryEntry_t de = {0};
+
+    fat32_get_file_info_coords(fat, dir_clust, file, &out_clust, &out_offset);
+
+    size_t offset = fat->cluster_base + (out_clust * fat->cluster_size) + out_offset;
+    fseek(fat->image, offset, SEEK_SET);
+
+    fread(&de, sizeof(DirectoryEntry_t), 1, fat->image);
+
+    return de; 
+}
+
+void fat32_write_file_info(fat_t* fat, size_t dir_clust, const char* file, DirectoryEntry_t ent) {
+    size_t out_clust, out_offset;
+
+    fat32_get_file_info_coords(fat, dir_clust, file, &out_clust, &out_offset);
+
+    size_t offset = fat->cluster_base + (out_clust * fat->cluster_size) + out_offset;
+    fseek(fat->image, offset, SEEK_SET);
+
+    fwrite(&ent, sizeof(DirectoryEntry_t), 1, fat->image);
+}
+
+void fat32_write_size(fat_t* fat, size_t fp_cluster, size_t fp_offset, size_t size) {
+    size_t offset = fat->cluster_base + (fp_cluster * fat->cluster_size) + fp_offset;
+    printf("=====> %x\n", offset);
+    fseek(fat->image, offset, SEEK_SET);
+
+    DirectoryEntry_t entry;
+    fread(&entry, sizeof(DirectoryEntry_t), 1, fat->image);
+
+    fseek(fat->image, offset, SEEK_SET);
+    
+    entry.file_size = size;
+
+    fwrite(&entry, sizeof(DirectoryEntry_t), 1, fat->image);
+}
+
+void fat32_write(fat_t* fat, const char* path, size_t offset, size_t size, const char* buffer) {
+    size_t out_file_size;
+
+    size_t cluster = fat32_search(fat, path);
+
+    size_t filesize = fat32_get_file_size(fat, path);
+
+    fat32_write_experimental(fat, cluster, filesize, offset, size, &out_file_size, buffer);
+
+    size_t fcl, fof;
+
+    // TODO: Get directory cluster and filename
+
+    const char* file = path + strlen(path);
+
+    while(*file != '/') {
+        file--;
+    }
+
+    file++;
+
+    
+    char* dirp = calloc((file - path) + 1, 1);
+
+    memcpy(dirp, path, file - path);
+
+    printf("Path: %s\n", dirp);
+    printf("File: %s\n", file);
+
+    size_t dir_cluster = fat32_search(fat, dirp);
+     
+    free(dirp);
+
+    fat32_get_file_info_coords(fat, dir_cluster, file, &fcl, &fof);
+    fat32_write_size(fat, fcl, fof, out_file_size);
+}
 
 int main() {
     fat_t myfat;
@@ -334,25 +803,21 @@ int main() {
     printf("Root directory cluster: %d\n", myfat.fat->root_directory_offset_in_clusters);
     printf("Cluster base: %d\n", myfat.cluster_base);
 
-    // Прочитать записи каталога в корневой директории
     direntry_t* dir = read_directory(&myfat, myfat.fat->root_directory_offset_in_clusters);
     direntry_t* orig = dir;
 
     fast_traverse(dir);
 
-    // Пример: чтение данных файла (необходимо указать правильный кластер)
-    // read_file_data(&myfat, 2);
+    //fat32_create_file(&myfat, 2, "Gavno", false);
+    //size_t cluster = fat32_create_file(&myfat, 2, "Pokemon.txt", true);
 
-    /*size_t cluster = fat32_search(&myfat, "/test/c/Zeraora.txt");
+    //printf("File at cluster: %zu\n", cluster);
 
-    printf("Cluster: %zu\n", cluster);
+    char* memory = "Pikachu forever!!!\n";
 
-    char mem[41] = {0};
+    //size_t cluster = fat32_create_file(&myfat, 2, "Pokemon.txt", true);
 
-    read_cluster_chain_advanced(&myfat, cluster, 0, 40, false, mem);
-
-    printf("'%s'\n", mem);
-    */
+    fat32_write(&myfat, "/Pokemon.txt", 4, strlen(memory), memory);
 
     fat32_deinit(&myfat);
 }
